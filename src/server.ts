@@ -421,9 +421,17 @@ https://github.com/Himess/privagent`);
         "/health": {
           get: {
             summary: "Health check",
-            description: "Returns service status and pool info. Free.",
+            description: "Returns service status and pool info. Free, no payment required.",
             security: [],
             "x-payment-info": { pricingMode: "fixed", price: "0", protocols: ["mpp"] },
+            parameters: [
+              {
+                name: "format",
+                in: "query",
+                required: false,
+                schema: { type: "string", enum: ["json"], default: "json" },
+              },
+            ],
             responses: {
               "200": {
                 description: "Service is healthy",
