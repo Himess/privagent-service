@@ -60,43 +60,58 @@ async function getEngine(): Promise<PrivacyEngine> {
     }
   }
 
+  // Pre-compute empty Merkle tree root (depth 20) and cache Poseidon
+  const { initPoseidon } = await import("./crypto.js");
+  const poseidon = await initPoseidon();
+
+  // Compute empty Merkle root: hash(0,0) repeated 20 times
+  let currentHash = BigInt(0);
+  for (let i = 0; i < 20; i++) {
+    currentHash = poseidon.hash2(currentHash, currentHash);
+  }
+  const emptyRoot = currentHash;
+
   privacyEngine = {
     initialized: true,
 
     async generateDepositProof(amount: bigint) {
       // Deposit: publicAmount > 0, 1 dummy input, 1 real output + 1 dummy output
-      // Uses 1x2 circuit
+      // Uses 1x2 circuit (same approach as ZKProver test-prove.ts)
       const circuit = circuits["1x2"];
       if (!circuit) throw new Error("1x2 circuit not available");
 
-      const { initPoseidon } = await import("./crypto.js");
-      const poseidon = await initPoseidon();
+      // Dummy input UTXO (amount=0, sits at leaf 0 of empty tree)
+      const dummyKey = BigInt(1);
+      const dummyPubkey = poseidon.hash1(dummyKey);
+      const dummyCommitment = poseidon.hash3(BigInt(0), dummyPubkey, BigInt(0));
+      const dummyNullifier = poseidon.hash3(dummyCommitment, BigInt(0), dummyKey);
 
-      // Generate deposit UTXO
-      const blinding = BigInt(Math.floor(Math.random() * 2 ** 120));
-      const privKey = BigInt(1); // Dummy for deposit
-      const pubkey = poseidon.hash1(privKey);
-      const commitment = poseidon.hash3(amount, pubkey, blinding);
+      // Output 1: real deposit UTXO
+      const recipientKey = BigInt(55555);
+      const recipientPubkey = poseidon.hash1(recipientKey);
+      const blinding = BigInt(Math.floor(Math.random() * 2 ** 48));
+      const commitment = poseidon.hash3(amount, recipientPubkey, blinding);
 
-      // Dummy output
-      const dummyBlinding = BigInt(Math.floor(Math.random() * 2 ** 120));
-      const dummyCommitment = poseidon.hash3(BigInt(0), pubkey, dummyBlinding);
+      // Output 2: zero-change dummy
+      const dummyOutCommitment = poseidon.hash3(BigInt(0), dummyPubkey, BigInt(0));
+
+      const extDataHash = poseidon.hash3(BigInt(0), BigInt(0), BigInt(0));
 
       const input = {
-        root: "0",
+        root: emptyRoot.toString(),
         publicAmount: amount.toString(),
-        extDataHash: "0",
+        extDataHash: extDataHash.toString(),
         protocolFee: "0",
-        inputNullifiers: ["0"],
-        outputCommitments: [commitment.toString(), dummyCommitment.toString()],
+        inputNullifiers: [dummyNullifier.toString()],
+        outputCommitments: [commitment.toString(), dummyOutCommitment.toString()],
         inAmount: ["0"],
-        inPrivateKey: ["1"],
+        inPrivateKey: [dummyKey.toString()],
         inBlinding: ["0"],
         inPathIndices: ["0"],
         inPathElements: [Array(20).fill("0")],
         outAmount: [amount.toString(), "0"],
-        outPubkey: [pubkey.toString(), pubkey.toString()],
-        outBlinding: [blinding.toString(), dummyBlinding.toString()],
+        outPubkey: [recipientPubkey.toString(), dummyPubkey.toString()],
+        outBlinding: [blinding.toString(), "0"],
       };
 
       const startTime = Date.now();
@@ -127,36 +142,61 @@ async function getEngine(): Promise<PrivacyEngine> {
       const circuit = circuits["1x2"];
       if (!circuit) throw new Error("1x2 circuit not available");
 
-      const { initPoseidon } = await import("./crypto.js");
-      const poseidon = await initPoseidon();
+      // Sender input UTXO (amount matches output for balance)
+      const senderKey = BigInt(1);
+      const senderPubkey = poseidon.hash1(senderKey);
+      const inBlinding = BigInt(0);
+      const inCommitment = poseidon.hash3(amount, senderPubkey, inBlinding);
+      const nullifier = poseidon.hash3(inCommitment, BigInt(0), senderKey);
 
-      const privKey = BigInt(1);
-      const senderPubkey = poseidon.hash1(privKey);
       const recipPubkey = BigInt(recipientPubkey);
 
-      // Payment UTXO for recipient
-      const payBlinding = BigInt(Math.floor(Math.random() * 2 ** 120));
+      // Output 1: payment to recipient
+      const payBlinding = BigInt(Math.floor(Math.random() * 2 ** 48));
       const payCommitment = poseidon.hash3(amount, recipPubkey, payBlinding);
 
-      // Dummy change UTXO
-      const changeBlinding = BigInt(Math.floor(Math.random() * 2 ** 120));
-      const changeCommitment = poseidon.hash3(BigInt(0), senderPubkey, changeBlinding);
+      // Output 2: zero-change
+      const changeCommitment = poseidon.hash3(BigInt(0), senderPubkey, BigInt(0));
+
+      const extDataHash = poseidon.hash3(BigInt(0), BigInt(0), BigInt(0));
+
+      // For transfer the input UTXO must exist in the tree. We use empty tree
+      // with the input commitment at index 0 — but the empty tree has zeros.
+      // For a valid demo, we use a dummy input with amount=transfer amount
+      // and set the tree root to match. In this demo, we build a custom root
+      // by replacing leaf 0 with inCommitment.
+      let customRoot = inCommitment;
+      let sibling = BigInt(0);
+      for (let i = 0; i < 20; i++) {
+        const left = customRoot;
+        // path index bit 0 => left child, sibling on right
+        sibling = i === 0 ? BigInt(0) : poseidon.hash2(sibling, sibling);
+        customRoot = poseidon.hash2(left, sibling);
+      }
+
+      // Recompute siblings for the path
+      const pathElements: string[] = [];
+      let sib = BigInt(0);
+      for (let i = 0; i < 20; i++) {
+        pathElements.push(sib.toString());
+        sib = poseidon.hash2(sib, sib);
+      }
 
       const input = {
-        root: "0",
+        root: customRoot.toString(),
         publicAmount: "0",
-        extDataHash: "0",
+        extDataHash: extDataHash.toString(),
         protocolFee: "0",
-        inputNullifiers: ["0"],
+        inputNullifiers: [nullifier.toString()],
         outputCommitments: [payCommitment.toString(), changeCommitment.toString()],
         inAmount: [amount.toString()],
-        inPrivateKey: ["1"],
-        inBlinding: ["0"],
+        inPrivateKey: [senderKey.toString()],
+        inBlinding: [inBlinding.toString()],
         inPathIndices: ["0"],
-        inPathElements: [Array(20).fill("0")],
+        inPathElements: [pathElements],
         outAmount: [amount.toString(), "0"],
         outPubkey: [recipPubkey.toString(), senderPubkey.toString()],
-        outBlinding: [payBlinding.toString(), changeBlinding.toString()],
+        outBlinding: [payBlinding.toString(), "0"],
       };
 
       const startTime = Date.now();
@@ -184,41 +224,53 @@ async function getEngine(): Promise<PrivacyEngine> {
     },
 
     async generateWithdrawProof(amount: bigint, recipient: string) {
-      // Withdraw: publicAmount < 0 (negative = outflow from pool)
+      // Withdraw: publicAmount < 0 (negative = outflow from pool, field-wrapped)
       const circuit = circuits["1x2"];
       if (!circuit) throw new Error("1x2 circuit not available");
 
-      const { initPoseidon } = await import("./crypto.js");
-      const poseidon = await initPoseidon();
+      const fieldPrime = BigInt("21888242871839275222246405745257275088548364400416034343698204186575808495617");
 
+      // Input UTXO to spend
       const privKey = BigInt(1);
       const pubkey = poseidon.hash1(privKey);
+      const inBlinding = BigInt(0);
+      const inCommitment = poseidon.hash3(amount, pubkey, inBlinding);
+      const nullifier = poseidon.hash3(inCommitment, BigInt(0), privKey);
 
-      // Dummy outputs
-      const blinding1 = BigInt(Math.floor(Math.random() * 2 ** 120));
-      const blinding2 = BigInt(Math.floor(Math.random() * 2 ** 120));
-      const commitment1 = poseidon.hash3(BigInt(0), pubkey, blinding1);
-      const commitment2 = poseidon.hash3(BigInt(0), pubkey, blinding2);
+      // Build custom Merkle root with inCommitment at leaf 0
+      let customRoot = inCommitment;
+      let sib = BigInt(0);
+      const pathElements: string[] = [];
+      for (let i = 0; i < 20; i++) {
+        pathElements.push(sib.toString());
+        customRoot = poseidon.hash2(customRoot, sib);
+        sib = poseidon.hash2(sib, sib);
+      }
+
+      // Dummy outputs (both zero)
+      const dummyCommitment1 = poseidon.hash3(BigInt(0), pubkey, BigInt(0));
+      const dummyCommitment2 = poseidon.hash3(BigInt(0), pubkey, BigInt(0));
 
       // publicAmount is negative for withdrawals (field-wrapped)
-      const fieldPrime = BigInt("21888242871839275222246405745257275088548364400416034343698204186575808495617");
       const publicAmount = (fieldPrime - amount) % fieldPrime;
 
+      const extDataHash = poseidon.hash3(BigInt(0), BigInt(0), BigInt(0));
+
       const input = {
-        root: "0",
+        root: customRoot.toString(),
         publicAmount: publicAmount.toString(),
-        extDataHash: "0",
+        extDataHash: extDataHash.toString(),
         protocolFee: "0",
-        inputNullifiers: ["0"],
-        outputCommitments: [commitment1.toString(), commitment2.toString()],
+        inputNullifiers: [nullifier.toString()],
+        outputCommitments: [dummyCommitment1.toString(), dummyCommitment2.toString()],
         inAmount: [amount.toString()],
-        inPrivateKey: ["1"],
-        inBlinding: ["0"],
+        inPrivateKey: [privKey.toString()],
+        inBlinding: [inBlinding.toString()],
         inPathIndices: ["0"],
-        inPathElements: [Array(20).fill("0")],
+        inPathElements: [pathElements],
         outAmount: ["0", "0"],
         outPubkey: [pubkey.toString(), pubkey.toString()],
-        outBlinding: [blinding1.toString(), blinding2.toString()],
+        outBlinding: ["0", "0"],
       };
 
       const startTime = Date.now();
