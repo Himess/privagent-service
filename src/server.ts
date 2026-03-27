@@ -423,6 +423,7 @@ https://github.com/Himess/privagent`);
             summary: "Health check",
             description: "Returns service status and pool info. Free.",
             security: [],
+            "x-payment-info": { pricingMode: "fixed", price: "0", protocols: ["mpp"] },
             responses: {
               "200": {
                 description: "Service is healthy",
@@ -593,6 +594,7 @@ https://github.com/Himess/privagent`);
             summary: "Verify a proof",
             description: "Verify a previously generated privacy proof. Free.",
             security: [],
+            "x-payment-info": { pricingMode: "fixed", price: "0", protocols: ["mpp"] },
             requestBody: {
               required: true,
               content: {
